@@ -13,6 +13,7 @@
 
 typedef NS_ENUM(NSUInteger, DKDebugExportMode) {
     DKDebugExportModePage,
+    DKDebugExportModeProject,
     DKDebugExportModeAudio,
 };
 

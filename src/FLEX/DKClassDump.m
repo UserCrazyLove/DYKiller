@@ -288,3 +288,33 @@ NSString *DKClassDumpHeaderForClass(Class cls) {
     if (img) imageName = [DKCString(img) lastPathComponent] ?: @"Unknown";
     return DKHeaderForClass(cls, imageName);
 }
+
+NSArray<NSDictionary *> *DKClassDumpRuntimeInventory(void) {
+    int classCount = objc_getClassList(NULL, 0);
+    if (classCount <= 0) return @[];
+
+    Class *classes = (__unsafe_unretained Class *)malloc(sizeof(Class) * (size_t)classCount);
+    if (!classes) return @[];
+
+    int loadedCount = objc_getClassList(classes, classCount);
+    NSMutableArray<NSDictionary *> *inventory = [NSMutableArray arrayWithCapacity:(NSUInteger)MAX(loadedCount, 0)];
+    for (int i = 0; i < loadedCount; i++) {
+        Class cls = classes[i];
+        if (!DKClassIsSafe(cls)) continue;
+
+        NSString *name = NSStringFromClass(cls);
+        if (DKClassNameIsRuntimeGenerated(name)) continue;
+
+        const char *image = class_getImageName(cls);
+        [inventory addObject:@{
+            @"name": name ?: @"",
+            @"image": image ? (DKCString(image) ?: @"") : @"",
+        }];
+    }
+    free(classes);
+
+    [inventory sortUsingComparator:^NSComparisonResult(NSDictionary *left, NSDictionary *right) {
+        return [left[@"name"] compare:right[@"name"]];
+    }];
+    return inventory;
+}

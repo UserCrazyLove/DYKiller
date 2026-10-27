@@ -20,9 +20,9 @@ NSString *const DKDebugExportWorkingDirectoryKey = @"DKDebugExportWorkingDirecto
 
 static NSString *const DKExportErrorDomain = @"com.dykiller.debug-export";
 
-// 单个导出包的文件数上限。页面导出约 200 个、音频导出约 15 个，
-// 这道闸门只用来防止将来某处再写出失控的循环。
-static const NSUInteger kDKMaxExportFiles = 8000;
+// 单个导出包的文件数上限。项目导出会包含全部安全运行时类，
+// 这里保留上限避免异常进程把临时目录和 ZIP 写爆。
+static const NSUInteger kDKMaxExportFiles = 20000;
 
 @implementation DKDebugExportResult
 @end
@@ -100,7 +100,11 @@ static void DKRecordError(DKExportSink *sink,
 }
 
 static BOOL DKWriteData(DKExportSink *sink, NSString *relativePath, NSData *data, BOOL critical) {
-    if (sink.files.count >= kDKMaxExportFiles) {
+    // 给最后的 manifest 保留一个条目，确保截断也能被报告出来。
+    NSUInteger limit = [relativePath isEqualToString:@"manifest.json"]
+        ? kDKMaxExportFiles
+        : (kDKMaxExportFiles - 1);
+    if (sink.files.count >= limit) {
         sink.droppedFiles++;
         return NO;
     }
@@ -142,6 +146,7 @@ static BOOL DKWriteJSON(DKExportSink *sink, NSString *relativePath, id object, B
 }
 
 static NSString *DKModeName(DKDebugExportMode mode) {
+    if (mode == DKDebugExportModeProject) return @"project";
     return mode == DKDebugExportModeAudio ? @"audio" : @"page";
 }
 
@@ -177,6 +182,13 @@ static NSString *DKReadme(DKDebugExportContext *context, DKDebugExportMode mode)
          DKAudioProbeTotalSeconds - DKAudioProbeWarmupSeconds - DKAudioProbeRecordSeconds];
         [text appendFormat:@"用户标记: %@\n实际推断: %@\n", capture.declaredState ?: @"unknown",
          capture.actualState ?: @"unknown"];
+    } else if (mode == DKDebugExportModeProject) {
+        [text appendString:@"Contents:\n"];
+        [text appendString:@"- project/classes/index.json  全部安全运行时类的索引\n"];
+        [text appendString:@"- project/classes/            全部安全、非运行时生成类的头文件\n"];
+        [text appendString:@"- ui/                         当前前台窗口的现场快照\n"];
+        [text appendString:@"- probe/tabbar.txt            液态玻璃底栏现场\n"];
+        [text appendString:@"\n项目导出包含当前进程已经加载的运行时类；无法从设备导出仓库源代码。\n"];
     } else {
         [text appendString:@"Contents:\n- page/: UI 主线程快照与本页类\n"];
         [text appendString:@"- probe/tabbar.txt: 液态玻璃底栏现场\n- ui/: 目标窗口截图\n"];
@@ -216,6 +228,67 @@ static void DKWritePageFiles(DKExportSink *sink,
     DKWriteJSON(sink, @"page/layers.json", context.layersJSON ?: @[], NO);
     if (progress) progress(@"导出本页类头文件...");
     DKWritePageClasses(sink, context.pageClassNames ?: @[]);
+}
+
+#pragma mark - 项目内容
+
+static void DKWriteProjectClasses(DKExportSink *sink, void (^progress)(NSString *text)) {
+    NSArray<NSDictionary *> *inventory = DKClassDumpRuntimeInventory();
+    NSMutableArray<NSDictionary *> *index = [NSMutableArray arrayWithCapacity:inventory.count];
+    for (NSDictionary *entry in inventory) {
+        NSString *name = [entry[@"name"] isKindOfClass:NSString.class] ? entry[@"name"] : @"";
+        NSString *relative = [@"project/classes" stringByAppendingPathComponent:
+                              [DKUniqueFileStem(name) stringByAppendingString:@".h"]];
+        [index addObject:@{
+            @"name": name,
+            @"image": entry[@"image"] ?: @"",
+            @"path": relative,
+        }];
+    }
+
+    // 先写索引，类文件达到上限时仍能知道完整的枚举结果和预期路径。
+    DKWriteJSON(sink, @"project/classes/index.json", @{
+        @"schemaVersion": @"dykiller.runtime-class-index.v1",
+        @"scope": @"all-safe-non-generated-runtime-classes",
+        @"classCount": @(inventory.count),
+        @"entries": index,
+    }, NO);
+
+    if (progress) progress([NSString stringWithFormat:@"导出全部运行时类（%lu 个）...", (unsigned long)inventory.count]);
+    NSUInteger completed = 0;
+    for (NSDictionary *entry in inventory) {
+        @autoreleasepool {
+            NSString *name = entry[@"name"];
+            Class cls = NSClassFromString(name);
+            NSString *header = cls ? DKClassDumpHeaderForClass(cls) : nil;
+            NSString *relative = [@"project/classes" stringByAppendingPathComponent:
+                                  [DKUniqueFileStem(name) stringByAppendingString:@".h"]];
+            if (header.length) {
+                DKWriteString(sink, relative, header, NO);
+            } else {
+                DKRecordError(sink, relative, @"project-class",
+                              DKMakeExportError(21, @"运行时类头文件生成失败", nil), NO);
+            }
+            completed++;
+            if (progress && (completed % 250 == 0 || completed == inventory.count)) {
+                progress([NSString stringWithFormat:@"已处理运行时类 %lu/%lu...",
+                          (unsigned long)completed, (unsigned long)inventory.count]);
+            }
+        }
+    }
+}
+
+static void DKWriteProjectFiles(DKExportSink *sink,
+                                DKDebugExportContext *context,
+                                void (^progress)(NSString *text)) {
+    if (progress) progress(@"写入当前窗口现场...");
+    DKWriteJSON(sink, @"ui/windows.json", context.windowsJSON ?: @[], NO);
+    DKWriteString(sink, @"ui/view-tree.txt", context.viewTreeText, NO);
+    DKWriteJSON(sink, @"ui/view-tree.json", context.viewTreeJSON ?: @[], NO);
+    DKWriteJSON(sink, @"ui/selected-view.json", context.selectedViewJSON ?: @{}, NO);
+    DKWriteString(sink, @"ui/view-controllers.txt", context.viewControllersText, NO);
+    DKWriteJSON(sink, @"ui/layers.json", context.layersJSON ?: @[], NO);
+    DKWriteProjectClasses(sink, progress);
 }
 
 #pragma mark - 音频内容
@@ -281,13 +354,18 @@ DKDebugExportResult *DKDebugCreateExport(DKDebugExportContext *context,
 
     if (mode == DKDebugExportModeAudio) {
         DKWriteAudioFiles(sink, context.audioCapture, progress);
+    } else if (mode == DKDebugExportModeProject) {
+        DKWriteProjectFiles(sink, context, progress);
     } else {
         DKWritePageFiles(sink, context, progress);
     }
 
     NSDictionary *manifest = @{
-        @"schemaVersion": mode == DKDebugExportModeAudio ? @"dykiller.audio-probe.v2" : @"dykiller.debug.v2",
+        @"schemaVersion": mode == DKDebugExportModeAudio ? @"dykiller.audio-probe.v2"
+                         : (mode == DKDebugExportModeProject ? @"dykiller.debug-project.v1"
+                                                              : @"dykiller.debug.v2"),
         @"mode": DKModeName(mode),
+        @"scope": mode == DKDebugExportModeProject ? @"runtime-project" : DKModeName(mode),
         @"dykillerVersion": DK_VERSION,
         @"device": context.metadata ?: @{},
         @"declaredState": context.audioCapture.declaredState ?: @"not-applicable",

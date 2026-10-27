@@ -34,7 +34,7 @@
 @property (nonatomic, strong) UIButton *wrenchButton;
 @property (nonatomic, assign) BOOL didPlaceButton;
 - (BOOL)capturesOverlayTouches;
-- (void)exportWholePage;
+- (void)exportWholeProject;
 - (void)showAudioStateMenu;
 - (void)startAudioExportWithDeclaredState:(NSString *)declaredState;
 @end
@@ -307,10 +307,10 @@ static void DKEnsureDebugWindow(void) {
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"DYKiller Debug"
                                                                    message:nil
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
-    [alert addAction:[UIAlertAction actionWithTitle:@"导出本页 zip"
+    [alert addAction:[UIAlertAction actionWithTitle:@"导出项目 zip"
                                               style:UIAlertActionStyleDefault
                                             handler:^(__unused UIAlertAction *action) {
-        [self exportWholePage];
+        [self exportWholeProject];
     }]];
     [alert addAction:[UIAlertAction actionWithTitle:@"导出音频专项 zip"
                                               style:UIAlertActionStyleDefault
@@ -325,18 +325,18 @@ static void DKEnsureDebugWindow(void) {
     [self presentViewController:alert animated:YES completion:nil];
 }
 
-- (void)exportWholePage {
+- (void)exportWholeProject {
     UIWindow *targetWindow = DKDebugTargetWindow();
     if (!targetWindow) {
         DKPresentError(self, @"没有找到可导出的 App 窗口");
         return;
     }
 
-    // 调试浮层始终置顶、无需选元素：直接快照整页（selectedView=nil 即整窗）。
+    // 调试浮层始终置顶、无需选元素：先快照当前现场，导出阶段再枚举整个运行时项目。
     DKDebugExportContext *context = DKDebugCaptureContext(targetWindow, CGPointZero, nil);
     context.presenter = self;
     context.sourceView = self.wrenchButton;
-    DKStartExport(context, DKDebugExportModePage);
+    DKStartExport(context, DKDebugExportModeProject);
 }
 
 - (void)showAudioStateMenu {

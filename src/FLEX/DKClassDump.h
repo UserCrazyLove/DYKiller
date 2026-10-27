@@ -25,6 +25,10 @@ BOOL DKClassNameIsRuntimeGenerated(NSString *name);
 /// 内含安全内省检查 + @try 兜底；不安全 / nil 一律返回 nil。
 NSString *DKClassDumpHeaderForClass(Class cls);
 
+/// 枚举当前进程中可安全导出的全部运行时类。
+/// 返回按类名排序的字典数组，每项包含 name 与 image。
+NSArray<NSDictionary *> *DKClassDumpRuntimeInventory(void);
+
 #ifdef __cplusplus
 }
 #endif
